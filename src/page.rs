@@ -123,7 +123,7 @@ impl TryFrom<&Node> for Page {
                 }
 
                 for Key(key) in keys {
-                    let key_bytes = key.as_bytes();
+                    let key_bytes = key.to_be_bytes();
                     let mut raw_key: [u8; KEY_SIZE] = [0x00; KEY_SIZE];
                     if key_bytes.len() > KEY_SIZE {
                         return Err(Error::KeyOverflowError);
@@ -144,7 +144,7 @@ impl TryFrom<&Node> for Page {
 
                 let mut page_offset = LEAF_NODE_HEADER_SIZE;
                 for pair in kv_pairs {
-                    let key_bytes = pair.key.as_bytes();
+                    let key_bytes = pair.key.to_be_bytes();
                     let mut raw_key: [u8; KEY_SIZE] = [0x00; KEY_SIZE];
                     if key_bytes.len() > KEY_SIZE {
                         return Err(Error::KeyOverflowError);
@@ -156,7 +156,7 @@ impl TryFrom<&Node> for Page {
                     data[page_offset..page_offset + KEY_SIZE].clone_from_slice(&raw_key);
                     page_offset += KEY_SIZE;
 
-                    let value_bytes = pair.value.as_bytes();
+                    let value_bytes = pair.value.to_be_bytes();
                     let mut raw_value: [u8; VALUE_SIZE] = [0x00; VALUE_SIZE];
                     if value_bytes.len() > VALUE_SIZE {
                         return Err(Error::ValueOverflowError);
@@ -207,9 +207,9 @@ mod tests {
 
         let some_leaf = Node::new(
             NodeType::Leaf(vec![
-                KeyValuePair::new("foo".to_string(), "bar".to_string()),
-                KeyValuePair::new("lebron".to_string(), "james".to_string()),
-                KeyValuePair::new("ariana".to_string(), "grande".to_string()),
+                KeyValuePair::new(123, 1),
+                KeyValuePair::new(456, 3271898),
+                KeyValuePair::new(75843197, 321849),
             ]),
             true,
             None,
@@ -243,9 +243,9 @@ mod tests {
                     Offset(PAGE_SIZE * 4),
                 ],
                 vec![
-                    Key("foo bar".to_string()),
-                    Key("lebron".to_string()),
-                    Key("ariana".to_string()),
+                    Key(123),
+                    Key(456),
+                    Key(75843197),
                 ],
             ),
             true,

@@ -7,7 +7,6 @@ use crate::page_layout::{
     PARENT_POINTER_OFFSET, PTR_SIZE, VALUE_SIZE,
 };
 use std::convert::TryFrom;
-use std::str;
 
 /// Node represents a node in the BTree occupied by a single page in memory.
 #[derive(Clone, Debug)]
@@ -96,13 +95,9 @@ impl TryFrom<Page> for Node {
                 // Number of keys is always one less than the number of children (i.e. branching factor)
                 for _i in 1..num_children {
                     let key_raw = page.get_ptr_from_offset(offset, KEY_SIZE);
-                    let key = match str::from_utf8(key_raw) {
-                        Ok(key) => key,
-                        Err(_) => return Err(Error::UTF8Error),
-                    };
+                    let key = u64::from_be_bytes(key_raw[..8].try_into().unwrap());
                     offset += KEY_SIZE;
-                    // Trim leading or trailing zeros.
-                    keys.push(Key(key.trim_matches(char::from(0)).to_string()));
+                    keys.push(Key(key));
                 }
                 Ok(Node::new(
                     NodeType::Internal(children, keys),
@@ -118,24 +113,15 @@ impl TryFrom<Page> for Node {
 
                 for _i in 0..num_keys_val_pairs {
                     let key_raw = page.get_ptr_from_offset(offset, KEY_SIZE);
-                    let key = match str::from_utf8(key_raw) {
-                        Ok(key) => key,
-                        Err(_) => return Err(Error::UTF8Error),
-                    };
+                    let key = u64::from_be_bytes(key_raw[..8].try_into().unwrap());
                     offset += KEY_SIZE;
 
                     let value_raw = page.get_ptr_from_offset(offset, VALUE_SIZE);
-                    let value = match str::from_utf8(value_raw) {
-                        Ok(val) => val,
-                        Err(_) => return Err(Error::UTF8Error),
-                    };
+                    let value = u64::from_be_bytes(value_raw[..8].try_into().unwrap());
                     offset += VALUE_SIZE;
 
                     // Trim leading or trailing zeros.
-                    pairs.push(KeyValuePair::new(
-                        key.trim_matches(char::from(0)).to_string(),
-                        value.trim_matches(char::from(0)).to_string(),
-                    ))
+                    pairs.push(KeyValuePair::new(key, value))
                 }
                 Ok(Node::new(NodeType::Leaf(pairs), is_root, parent_offset))
             }
@@ -170,8 +156,8 @@ mod tests {
             0x02, // Leaf Node type byte.
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Parent offset.
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Number of Key-Value pairs.
-            0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00, 0x00, 0x00, // "hello"
-            0x77, 0x6f, 0x72, 0x6c, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, // "world"
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, // 1
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, // 65537
         ];
         let junk: [u8; PAGE_SIZE - DATA_LEN] = [0x00; PAGE_SIZE - DATA_LEN];
         let mut page = [0x00; PAGE_SIZE];
@@ -197,8 +183,8 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, // 4096  (2nd Page)
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00, // 8192  (3rd Page)
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x00, // 12288 (4th Page)
-            0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x00, 0x00, 0x00, 0x00, // "hello"
-            0x77, 0x6f, 0x72, 0x6c, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, // "world"
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, // 1
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, // 65537
         ];
         let junk: [u8; PAGE_SIZE - DATA_LEN] = [0x00; PAGE_SIZE - DATA_LEN];
 
@@ -217,13 +203,13 @@ mod tests {
                 Some(key) => key,
                 None => return Err(Error::UnexpectedError),
             };
-            assert_eq!(first_key, "hello");
+            assert_eq!(*first_key, 1);
 
             let Key(second_key) = match keys.get(1) {
                 Some(key) => key,
                 None => return Err(Error::UnexpectedError),
             };
-            assert_eq!(second_key, "world");
+            assert_eq!(*second_key, 65537);
             return Ok(());
         }
 
@@ -236,34 +222,34 @@ mod tests {
         use crate::node_type::KeyValuePair;
         let mut node = Node::new(
             NodeType::Leaf(vec![
-                KeyValuePair::new("foo".to_string(), "bar".to_string()),
-                KeyValuePair::new("lebron".to_string(), "james".to_string()),
-                KeyValuePair::new("ariana".to_string(), "grande".to_string()),
+                KeyValuePair::new(123, 7543892),
+                KeyValuePair::new(456, 898),
+                KeyValuePair::new(555, 666),
             ]),
             true,
             None,
         );
 
         let (median, sibling) = node.split(2)?;
-        assert_eq!(median, Key("lebron".to_string()));
+        assert_eq!(median, Key(456));
         assert_eq!(
             node.node_type,
             NodeType::Leaf(vec![
                 KeyValuePair {
-                    key: "foo".to_string(),
-                    value: "bar".to_string()
+                    key: 123,
+                    value: 7543892
                 },
                 KeyValuePair {
-                    key: "lebron".to_string(),
-                    value: "james".to_string()
+                    key: 456,
+                    value: 898
                 }
             ])
         );
         assert_eq!(
             sibling.node_type,
             NodeType::Leaf(vec![KeyValuePair::new(
-                "ariana".to_string(),
-                "grande".to_string()
+                555,
+                666
             )])
         );
         Ok(())
@@ -284,9 +270,9 @@ mod tests {
                     Offset(PAGE_SIZE * 4),
                 ],
                 vec![
-                    Key("foo bar".to_string()),
-                    Key("lebron".to_string()),
-                    Key("ariana".to_string()),
+                    Key(123456),
+                    Key(456),
+                    Key(555),
                 ],
             ),
             true,
@@ -294,19 +280,19 @@ mod tests {
         );
 
         let (median, sibling) = node.split(2)?;
-        assert_eq!(median, Key("lebron".to_string()));
+        assert_eq!(median, Key(456));
         assert_eq!(
             node.node_type,
             NodeType::Internal(
                 vec![Offset(PAGE_SIZE), Offset(PAGE_SIZE * 2)],
-                vec![Key("foo bar".to_string())]
+                vec![Key(123456)]
             )
         );
         assert_eq!(
             sibling.node_type,
             NodeType::Internal(
                 vec![Offset(PAGE_SIZE * 3), Offset(PAGE_SIZE * 4)],
-                vec![Key("ariana".to_string())]
+                vec![Key(555)]
             )
         );
         Ok(())

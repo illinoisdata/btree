@@ -7,6 +7,7 @@ use crate::wal::Wal;
 use std::cmp;
 use std::convert::TryFrom;
 use std::path::Path;
+use std::path::PathBuf;
 
 /// B+Tree properties.
 pub const MAX_BRANCHING_FACTOR: usize = 200;
@@ -23,7 +24,7 @@ pub struct BTree {
 /// BtreeBuilder is a Builder for the BTree struct.
 pub struct BTreeBuilder {
     /// Path to the tree file.
-    path: &'static Path,
+    path: PathBuf,
     /// The BTree parameter, an inner node contains no more than 2*b-1 keys and no less than b-1 keys
     /// and no more than 2*b children and no less than b children.
     b: usize,
@@ -32,12 +33,12 @@ pub struct BTreeBuilder {
 impl BTreeBuilder {
     pub fn new() -> BTreeBuilder {
         BTreeBuilder {
-            path: Path::new(""),
+            path: PathBuf::new(),
             b: 0,
         }
     }
 
-    pub fn path(mut self, path: &'static Path) -> BTreeBuilder {
+    pub fn path(mut self, path: PathBuf) -> BTreeBuilder {
         self.path = path;
         self
     }
@@ -55,7 +56,7 @@ impl BTreeBuilder {
             return Err(Error::UnexpectedError);
         }
 
-        let mut pager = Pager::new(self.path)?;
+        let mut pager = Pager::new(&self.path)?;
         let root = Node::new(NodeType::Leaf(vec![]), true, None);
         let root_offset = pager.write_page(Page::try_from(&root)?)?;
         let parent_directory = self.path.parent().unwrap_or_else(|| Path::new("/tmp"));
@@ -77,7 +78,7 @@ impl Default for BTreeBuilder {
     fn default() -> Self {
         BTreeBuilder::new()
             .b_parameter(200)
-            .path(Path::new("/tmp/db"))
+            .path(PathBuf::from("/tmp/db"))
     }
 }
 
@@ -197,19 +198,19 @@ impl BTree {
     }
 
     /// search searches for a specific key in the BTree.
-    pub fn search(&mut self, key: String) -> Result<KeyValuePair, Error> {
+    pub fn search(&mut self, key: u64) -> Result<KeyValuePair, Error> {
         let root_offset = self.wal.get_root()?;
         let root_page = self.pager.get_page(&root_offset)?;
         let root = Node::try_from(root_page)?;
-        self.search_node(root, &key)
+        self.search_node(root, key)
     }
 
     /// search_node recursively searches a sub tree rooted at node for a key.
-    fn search_node(&mut self, node: Node, search: &str) -> Result<KeyValuePair, Error> {
+    fn search_node(&mut self, node: Node, search: u64) -> Result<KeyValuePair, Error> {
         match node.node_type {
             NodeType::Internal(children, keys) => {
                 let idx = keys
-                    .binary_search(&Key(search.to_string()))
+                    .binary_search(&Key(search))
                     .unwrap_or_else(|x| x);
                 // Retrieve child page from disk and deserialize.
                 let child_offset = children.get(idx).ok_or(Error::UnexpectedError)?;
@@ -219,7 +220,7 @@ impl BTree {
             }
             NodeType::Leaf(pairs) => {
                 if let Ok(idx) =
-                    pairs.binary_search_by_key(&search.to_string(), |pair| pair.key.clone())
+                    pairs.binary_search_by_key(&search, |pair| pair.key.clone())
                 {
                     return Ok(pairs[idx].clone());
                 }
@@ -416,28 +417,29 @@ impl BTree {
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
+    use tempfile::TempDir;
 
     #[test]
     fn search_works() -> Result<(), Error> {
         use crate::btree::BTreeBuilder;
         use crate::node_type::KeyValuePair;
-        use std::path::Path;
 
+        let tempdir = TempDir::new()?;
         let mut btree = BTreeBuilder::new()
-            .path(Path::new("/tmp/db"))
+            .path(tempdir.path().join("btree"))
             .b_parameter(2)
             .build()?;
-        btree.insert(KeyValuePair::new("a".to_string(), "shalom".to_string()))?;
-        btree.insert(KeyValuePair::new("b".to_string(), "hello".to_string()))?;
-        btree.insert(KeyValuePair::new("c".to_string(), "marhaba".to_string()))?;
+        btree.insert(KeyValuePair::new(1, 401))?;
+        btree.insert(KeyValuePair::new(2, 402))?;
+        btree.insert(KeyValuePair::new(3, 403))?;
 
-        let mut kv = btree.search("b".to_string())?;
-        assert_eq!(kv.key, "b");
-        assert_eq!(kv.value, "hello");
+        let mut kv = btree.search(2)?;
+        assert_eq!(kv.key, 2);
+        assert_eq!(kv.value, 402);
 
-        kv = btree.search("c".to_string())?;
-        assert_eq!(kv.key, "c");
-        assert_eq!(kv.value, "marhaba");
+        kv = btree.search(3)?;
+        assert_eq!(kv.key, 3);
+        assert_eq!(kv.value, 403);
 
         Ok(())
     }
@@ -446,57 +448,57 @@ mod tests {
     fn insert_works() -> Result<(), Error> {
         use crate::btree::BTreeBuilder;
         use crate::node_type::KeyValuePair;
-        use std::path::Path;
-
+        
+        let tempdir = TempDir::new()?;
         let mut btree = BTreeBuilder::new()
-            .path(Path::new("/tmp/db"))
+            .path(tempdir.path().join("btree"))
             .b_parameter(2)
             .build()?;
-        btree.insert(KeyValuePair::new("a".to_string(), "shalom".to_string()))?;
-        btree.insert(KeyValuePair::new("b".to_string(), "hello".to_string()))?;
-        btree.insert(KeyValuePair::new("c".to_string(), "marhaba".to_string()))?;
-        btree.insert(KeyValuePair::new("d".to_string(), "olah".to_string()))?;
-        btree.insert(KeyValuePair::new("e".to_string(), "salam".to_string()))?;
-        btree.insert(KeyValuePair::new("f".to_string(), "hallo".to_string()))?;
-        btree.insert(KeyValuePair::new("g".to_string(), "Konnichiwa".to_string()))?;
-        btree.insert(KeyValuePair::new("h".to_string(), "Ni hao".to_string()))?;
-        btree.insert(KeyValuePair::new("i".to_string(), "Ciao".to_string()))?;
+        btree.insert(KeyValuePair::new(1, 401))?;
+        btree.insert(KeyValuePair::new(2, 402))?;
+        btree.insert(KeyValuePair::new(3, 403))?;
+        btree.insert(KeyValuePair::new(4, 404))?;
+        btree.insert(KeyValuePair::new(5, 405))?;
+        btree.insert(KeyValuePair::new(6, 406))?;
+        btree.insert(KeyValuePair::new(7, 407))?;
+        btree.insert(KeyValuePair::new(8, 408))?;
+        btree.insert(KeyValuePair::new(9, 409))?;
 
-        let mut kv = btree.search("a".to_string())?;
-        assert_eq!(kv.key, "a");
-        assert_eq!(kv.value, "shalom");
+        let mut kv = btree.search(1)?;
+        assert_eq!(kv.key, 1);
+        assert_eq!(kv.value, 401);
 
-        kv = btree.search("b".to_string())?;
-        assert_eq!(kv.key, "b");
-        assert_eq!(kv.value, "hello");
+        kv = btree.search(2)?;
+        assert_eq!(kv.key, 2);
+        assert_eq!(kv.value, 402);
 
-        kv = btree.search("c".to_string())?;
-        assert_eq!(kv.key, "c");
-        assert_eq!(kv.value, "marhaba");
+        kv = btree.search(3)?;
+        assert_eq!(kv.key, 3);
+        assert_eq!(kv.value, 403);
 
-        kv = btree.search("d".to_string())?;
-        assert_eq!(kv.key, "d");
-        assert_eq!(kv.value, "olah");
+        kv = btree.search(4)?;
+        assert_eq!(kv.key, 4);
+        assert_eq!(kv.value, 404);
 
-        kv = btree.search("e".to_string())?;
-        assert_eq!(kv.key, "e");
-        assert_eq!(kv.value, "salam");
+        kv = btree.search(5)?;
+        assert_eq!(kv.key, 5);
+        assert_eq!(kv.value, 405);
 
-        kv = btree.search("f".to_string())?;
-        assert_eq!(kv.key, "f");
-        assert_eq!(kv.value, "hallo");
+        kv = btree.search(6)?;
+        assert_eq!(kv.key, 6);
+        assert_eq!(kv.value, 406);
 
-        kv = btree.search("g".to_string())?;
-        assert_eq!(kv.key, "g");
-        assert_eq!(kv.value, "Konnichiwa");
+        kv = btree.search(7)?;
+        assert_eq!(kv.key, 7);
+        assert_eq!(kv.value, 407);
 
-        kv = btree.search("h".to_string())?;
-        assert_eq!(kv.key, "h");
-        assert_eq!(kv.value, "Ni hao");
+        kv = btree.search(8)?;
+        assert_eq!(kv.key, 8);
+        assert_eq!(kv.value, 408);
 
-        kv = btree.search("i".to_string())?;
-        assert_eq!(kv.key, "i");
-        assert_eq!(kv.value, "Ciao");
+        kv = btree.search(9)?;
+        assert_eq!(kv.key, 9);
+        assert_eq!(kv.value, 409);
         Ok(())
     }
 
@@ -505,41 +507,41 @@ mod tests {
         use crate::btree::BTreeBuilder;
         use crate::error::Error;
         use crate::node_type::{Key, KeyValuePair};
-        use std::path::Path;
 
+        let tempdir = TempDir::new()?;
         let mut btree = BTreeBuilder::new()
-            .path(Path::new("/tmp/db"))
+            .path(tempdir.path().join("btree"))
             .b_parameter(2)
             .build()?;
-        btree.insert(KeyValuePair::new("d".to_string(), "olah".to_string()))?;
-        btree.insert(KeyValuePair::new("e".to_string(), "salam".to_string()))?;
-        btree.insert(KeyValuePair::new("f".to_string(), "hallo".to_string()))?;
-        btree.insert(KeyValuePair::new("a".to_string(), "shalom".to_string()))?;
-        btree.insert(KeyValuePair::new("b".to_string(), "hello".to_string()))?;
-        btree.insert(KeyValuePair::new("c".to_string(), "marhaba".to_string()))?;
+        btree.insert(KeyValuePair::new(4, 404))?;
+        btree.insert(KeyValuePair::new(5, 405))?;
+        btree.insert(KeyValuePair::new(6, 406))?;
+        btree.insert(KeyValuePair::new(1, 401))?;
+        btree.insert(KeyValuePair::new(2, 402))?;
+        btree.insert(KeyValuePair::new(3, 403))?;
 
-        let mut kv = btree.search("c".to_string())?;
-        assert_eq!(kv.key, "c");
-        assert_eq!(kv.value, "marhaba");
+        let mut kv = btree.search(3)?;
+        assert_eq!(kv.key, 3);
+        assert_eq!(kv.value, 403);
 
-        btree.delete(Key("c".to_string()))?;
-        let mut res = btree.search("c".to_string());
+        btree.delete(Key(3))?;
+        let mut res = btree.search(3);
         assert!(matches!(res, Err(Error::KeyNotFound)));
 
-        kv = btree.search("d".to_string())?;
-        assert_eq!(kv.key, "d");
-        assert_eq!(kv.value, "olah");
+        kv = btree.search(4)?;
+        assert_eq!(kv.key, 4);
+        assert_eq!(kv.value, 404);
 
-        btree.delete(Key("d".to_string()))?;
-        res = btree.search("d".to_string());
+        btree.delete(Key(4))?;
+        res = btree.search(4);
         assert!(matches!(res, Err(Error::KeyNotFound)));
 
-        btree.delete(Key("e".to_string()))?;
-        res = btree.search("e".to_string());
+        btree.delete(Key(5))?;
+        res = btree.search(5);
         assert!(matches!(res, Err(Error::KeyNotFound)));
 
-        btree.delete(Key("f".to_string()))?;
-        res = btree.search("f".to_string());
+        btree.delete(Key(6))?;
+        res = btree.search(6);
         assert!(matches!(res, Err(Error::KeyNotFound)));
 
         Ok(())
